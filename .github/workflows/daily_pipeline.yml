@@ -23,8 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: false
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -32,7 +31,7 @@ jobs:
           pip install \
             "psycopg[binary]" \
             python-dotenv \
-            requests \
+            requests 
             yfinance \
             dbt-core==1.10.15 \
             dbt-postgres==1.9.1
