@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: stg_trades
+    description: 'Cleaned trade records ingested from Google Sheets.'
+    columns:
+      - name: trade_id
+        description: 'Unique identifier for each trade.'
+        data_tests:
+          - not_null
+          - unique
+      - name: ticker
+        data_tests:
+          - not_null
+      - name: trade_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['BUY', 'SELL']
+
+  - name: stg_stock_prices
+    description: 'Cleaned daily closing prices for portfolio stocks.'
+    columns:
+      - name: ticker
+        data_tests:
+          - not_null
+      - name: price_date
+        data_tests:
+          - not_null
+      - name: close_price
+        data_tests:
+          - not_null
+
+  - name: fct_portfolio_valuation
+    description: 'Daily portfolio value in USD and NGN.'
+    columns:
+      - name: price_date
+        data_tests:
+          - not_null
+          - unique
+      - name: portfolio_value_usd
+        data_tests:
+          - not_null

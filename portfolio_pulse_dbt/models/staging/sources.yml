@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: raw_portfolio
+    schema: airbyte_raw
+    tables:
+      - name: trades
+        identifier: Sheet1
+        quoting:
+          identifier: true
+
+  - name: portfolio
+    schema: public
+    tables:
+      - name: stock_prices
+      - name: exchange_rates

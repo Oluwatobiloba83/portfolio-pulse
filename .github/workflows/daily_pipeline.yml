@@ -1,0 +1,91 @@
+name: PortfolioPulse Daily Pipeline
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DBT_PROFILES_DIR: ~/.dbt
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            "psycopg[binary]" \
+            python-dotenv \
+            requests \
+            yfinance \
+            dbt-core==1.10.15 \
+            dbt-postgres==1.9.1
+
+      - name: Validate database secret
+        run: |
+          python -c "import os; assert os.getenv('DATABASE_URL'), 'DATABASE_URL secret is missing'"
+
+      - name: Create dbt profile
+        run: |
+          mkdir -p "$HOME/.dbt"
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse, unquote
+          import yaml
+
+          url = urlparse(os.environ["DATABASE_URL"])
+          if not url.hostname or not url.username or not url.path.strip("/"):
+              raise ValueError("DATABASE_URL is missing required connection fields")
+
+          profile = {
+              "portfolio_pulse_dbt": {
+                  "target": "dev",
+                  "outputs": {
+                      "dev": {
+                          "type": "postgres",
+                          "host": url.hostname,
+                          "port": url.port or 5432,
+                          "user": unquote(url.username),
+                          "pass": unquote(url.password or ""),
+                          "dbname": unquote(url.path.strip("/")),
+                          "schema": "public",
+                          "threads": 4,
+                          "sslmode": "require",
+                      }
+                  },
+              }
+          }
+
+          with open(os.path.expanduser("~/.dbt/profiles.yml"), "w") as f:
+              yaml.safe_dump(profile, f, default_flow_style=False)
+          PY
+
+      - name: Ingest stock prices
+        run: python ingestion/load_stock_prices.py
+
+      - name: Ingest USD-NGN exchange rates
+        run: python ingestion/load_exchange_rates.py
+
+      - name: Run dbt models
+        working-directory: portfolio_pulse_dbt
+        run: dbt run
+
+      - name: Run dbt tests
+        working-directory: portfolio_pulse_dbt
+        run: dbt test
