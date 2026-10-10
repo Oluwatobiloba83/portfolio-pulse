@@ -50,3 +50,4 @@ LEFT JOIN LATERAL (
     ORDER BY rate_date DESC
     LIMIT 1
 ) AS fx ON TRUE
+

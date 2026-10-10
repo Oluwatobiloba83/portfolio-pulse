@@ -9,6 +9,8 @@ sources:
         quoting:
           identifier: true
 
+      - name: usd_ngn_exchange_rates
+
   - name: portfolio
     schema: public
     tables:

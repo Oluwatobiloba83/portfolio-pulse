@@ -1,3 +1,4 @@
+
 version: 2
 
 models:
@@ -39,5 +40,34 @@ models:
           - not_null
           - unique
       - name: portfolio_value_usd
+        data_tests:
+          - not_null
+
+  - name: fct_position_performance
+    description: 'Latest market value, cost basis, unrealized return, and allocation for each portfolio position.'
+    columns:
+      - name: ticker
+        data_tests:
+          - not_null
+          - unique
+      - name: shares_held
+        data_tests:
+          - not_null
+      - name: cost_basis_usd
+        data_tests:
+          - not_null
+      - name: latest_price_date
+        data_tests:
+          - not_null
+      - name: latest_close_price
+        data_tests:
+          - not_null
+      - name: market_value_usd
+        data_tests:
+          - not_null
+      - name: unrealized_gain_loss_usd
+        data_tests:
+          - not_null
+      - name: allocation_pct
         data_tests:
           - not_null

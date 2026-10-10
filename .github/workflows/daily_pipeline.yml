@@ -11,9 +11,14 @@ permissions:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      AIRBYTE_CLIENT_ID: ${{ secrets.AIRBYTE_CLIENT_ID }}
+      AIRBYTE_CLIENT_SECRET: ${{ secrets.AIRBYTE_CLIENT_SECRET }}
+      AIRBYTE_TRADES_CONNECTION_ID: ${{ secrets.AIRBYTE_TRADES_CONNECTION_ID }}
+      AIRBYTE_FX_CONNECTION_ID: ${{ secrets.AIRBYTE_FX_CONNECTION_ID }}
 
     steps:
       - name: Check out repository
@@ -36,14 +41,34 @@ jobs:
             dbt-core==1.10.15 \
             dbt-postgres==1.9.1
 
-      - name: Validate database secret
+      - name: Validate required secrets
         run: |
-          python -c "import os; assert os.getenv('DATABASE_URL'), 'DATABASE_URL secret is missing'"
+          python - <<'PY'
+          import os
+
+          required = [
+              "DATABASE_URL",
+              "AIRBYTE_CLIENT_ID",
+              "AIRBYTE_CLIENT_SECRET",
+              "AIRBYTE_TRADES_CONNECTION_ID",
+              "AIRBYTE_FX_CONNECTION_ID",
+          ]
+
+          missing = [name for name in required if not os.getenv(name)]
+
+          if missing:
+              raise SystemExit(
+                  "Missing required GitHub secrets: " + ", ".join(missing)
+              )
+
+          print("All required secrets are configured.")
+          PY
 
       - name: Create dbt profile
         run: |
           mkdir -p "$HOME/.dbt"
           echo "DBT_PROFILES_DIR=$HOME/.dbt" >> "$GITHUB_ENV"
+
           python - <<'PY'
           import os
           import yaml
@@ -52,7 +77,9 @@ jobs:
           url = urlparse(os.environ["DATABASE_URL"])
 
           if not url.hostname or not url.username or not url.path.strip("/"):
-              raise ValueError("DATABASE_URL is missing required connection fields")
+              raise ValueError(
+                  "DATABASE_URL is missing required connection fields"
+              )
 
           profile = {
               "portfolio_pulse_dbt": {
@@ -80,8 +107,155 @@ jobs:
       - name: Ingest stock prices
         run: python ingestion/load_stock_prices.py
 
-      - name: Ingest USD-NGN exchange rates
-        run: python ingestion/load_exchange_rates.py
+      - name: Trigger and monitor Airbyte syncs
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import time
+          import requests
+
+          API = "https://api.airbyte.com/v1"
+          TIMEOUT_SECONDS = 30 * 60
+          POLL_SECONDS = 15
+
+          session = requests.Session()
+          session.headers.update({
+              "accept": "application/json",
+              "content-type": "application/json",
+          })
+
+          # Obtain a fresh, short-lived Airbyte API access token.
+          token_response = session.post(
+              f"{API}/applications/token",
+              json={
+                  "client_id": os.environ["AIRBYTE_CLIENT_ID"],
+                  "client_secret": os.environ["AIRBYTE_CLIENT_SECRET"],
+                  "grant-type": "client_credentials",
+              },
+              timeout=30,
+          )
+          token_response.raise_for_status()
+
+          access_token = token_response.json().get("access_token")
+          if not access_token:
+              raise RuntimeError(
+                  "Airbyte authentication response did not contain an access token."
+              )
+
+          session.headers["authorization"] = f"Bearer {access_token}"
+
+          connections = {
+              "Google Sheets trades": os.environ[
+                  "AIRBYTE_TRADES_CONNECTION_ID"
+              ],
+              "USD/NGN exchange rates": os.environ[
+                  "AIRBYTE_FX_CONNECTION_ID"
+              ],
+          }
+
+          jobs = {}
+
+          # Start both syncs before waiting for either one.
+          for name, connection_id in connections.items():
+              response = session.post(
+                  f"{API}/jobs",
+                  json={
+                      "jobType": "sync",
+                      "connectionId": connection_id,
+                  },
+                  timeout=30,
+              )
+              response.raise_for_status()
+
+              payload = response.json()
+              job_id = payload.get("jobId")
+
+              if job_id is None:
+                  raise RuntimeError(
+                      f"Airbyte did not return a job ID for {name}."
+                  )
+
+              jobs[name] = {
+                  "job_id": job_id,
+                  "status": str(payload.get("status", "pending")).lower(),
+              }
+
+              print(f"Started {name} sync; job ID: {job_id}")
+
+          terminal_statuses = {
+              "succeeded",
+              "failed",
+              "cancelled",
+              "canceled",
+              "incomplete",
+              "error",
+              "completed_with_errors",
+          }
+
+          deadline = time.monotonic() + TIMEOUT_SECONDS
+
+          while True:
+              all_succeeded = True
+
+              for name, job in jobs.items():
+                  if job["status"] == "succeeded":
+                      continue
+
+                  if job["status"] in terminal_statuses:
+                      raise RuntimeError(
+                          f"Airbyte sync failed: {name}, "
+                          f"job ID {job['job_id']}, "
+                          f"status {job['status']}."
+                      )
+
+                  response = session.get(
+                      f"{API}/jobs/{job['job_id']}",
+                      timeout=30,
+                  )
+                  response.raise_for_status()
+
+                  payload = response.json()
+                  status = str(payload.get("status", "")).lower()
+
+                  if not status:
+                      raise RuntimeError(
+                          f"Airbyte returned no status for {name}, "
+                          f"job ID {job['job_id']}."
+                      )
+
+                  if status != job["status"]:
+                      print(f"{name}: {job['status']} -> {status}")
+
+                  job["status"] = status
+
+                  if status in terminal_statuses and status != "succeeded":
+                      raise RuntimeError(
+                          f"Airbyte sync failed: {name}, "
+                          f"job ID {job['job_id']}, status {status}."
+                      )
+
+                  if status != "succeeded":
+                      all_succeeded = False
+
+              if all_succeeded:
+                  break
+
+              if time.monotonic() >= deadline:
+                  unfinished = [
+                      f"{name} (job {job['job_id']}, {job['status']})"
+                      for name, job in jobs.items()
+                      if job["status"] != "succeeded"
+                  ]
+                  raise TimeoutError(
+                      "Timed out waiting for Airbyte syncs: "
+                      + ", ".join(unfinished)
+                  )
+
+              time.sleep(POLL_SECONDS)
+
+          print("Both Airbyte syncs completed successfully.")
+          PY
 
       - name: Run dbt models
         working-directory: portfolio_pulse_dbt
