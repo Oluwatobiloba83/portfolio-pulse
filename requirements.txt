@@ -3,5 +3,6 @@ yfinance
 psycopg[binary]
 python-dotenv
 requests
+PyYAML
 dbt-core==1.10.15
 dbt-postgres==1.9.1
