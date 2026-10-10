@@ -1,0 +1,7 @@
+
+yfinance
+psycopg[binary]
+python-dotenv
+requests
+dbt-core==1.10.15
+dbt-postgres==1.9.1
